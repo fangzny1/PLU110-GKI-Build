@@ -14,11 +14,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build deps (ccache required by cache-restore step)
+      - name: Install Minimal Dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ccache
-          ccache --version | head -1
+          set -euo pipefail
+          echo "::group::Install dependencies"
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential clang lld flex bison \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils pigz
+          sudo apt-get clean
+          echo "✅ Dependencies installed"
+          echo "::endgroup::"
+
+      - name: Configure ccache (bounded)
+        run: |
+          echo "::group::Configure ccache environment"
+          set -euo pipefail
+          if command -v ccache >/dev/null 2>&1; then
+            CACHE_DIR="${{ github.workspace }}/.ccache"
+            CCACHE_LOG="${{ github.workspace }}/ccache.log"
+            mkdir -p "$CACHE_DIR"
+            SETTINGS=(
+              "CCACHE_DIR=$CACHE_DIR"
+              "CCACHE_MAXSIZE=12G"
+              "CCACHE_COMPILERCHECK=content"
+              "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+              "CCACHE_NOHASHDIR=true"
+              "CCACHE_IGNOREOPTIONS=--sysroot*"
+              "CCACHE_COMPRESSION=true"
+              "CCACHE_COMPRESSION_LEVEL=3"
+              "CCACHE_DIRECT=true"
+              "CCACHE_FILE_CLONE=true"
+              "CCACHE_INODE_CACHE=true"
+              "CCACHE_IS_KERNEL_COMPILING=true"
+              "CCACHE_UMASK=002"
+              "CCACHE_LOGFILE=${CCACHE_LOG}"
+              "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
+            )
+            for setting in "${SETTINGS[@]}"; do
+              export "$setting"
+              echo "$setting" >> "$GITHUB_ENV"
+            done
+            if ccache --help 2>&1 | grep -q 'depend_mode'; then
+              export CCACHE_DEPEND=true
+              echo "CCACHE_DEPEND=true" >> "$GITHUB_ENV"
+            fi
+            echo "✅ ccache configured successfully"
+            ccache -p | head -8
+          else
+            echo "ccache not found, skipping configuration."
+          fi
+          echo "::endgroup::"
 
       - name: Build kernel via WildKernels build-kernel action
         uses: ./.github/actions/build-kernel
